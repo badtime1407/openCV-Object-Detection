@@ -7,14 +7,15 @@ declare global {
 }
 
 const FINGER_NAMES = ["หัวแม่มือ", "ชี้", "กลาง", "นาง", "ก้อย"];
+const FINGER_COLORS = ["#FF6B6B", "#FFD93D", "#6BCB77", "#4D96FF", "#FF922B"];
+const HAND_COLORS = { right: "#00FF88", left: "#FF6BFF" };
 
 export default function FingerCountPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const handsRef = useRef<any>(null);
   const animationRef = useRef<number | null>(null);
-  const landmarksRef = useRef<any[] | null>(null);
-  const handednessRef = useRef<string>("Right");
+  const handsDataRef = useRef<{ lm: any[]; isRight: boolean }[]>([]);
   const lastProcessTimeRef = useRef(0);
   const isProcessingRef = useRef(false);
 
@@ -22,8 +23,8 @@ export default function FingerCountPage() {
 
   const [status, setStatus] = useState<"idle" | "loading" | "running" | "stopped">("idle");
   const [scriptLoaded, setScriptLoaded] = useState(false);
-  const [fingerCount, setFingerCount] = useState(0);
-  const [fingersUp, setFingersUp] = useState<boolean[]>([false, false, false, false, false]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [handsInfo, setHandsInfo] = useState<{ isRight: boolean; up: boolean[]; count: number }[]>([]);
 
   // ── โหลด MediaPipe CDN ─────────────────────────────────────────
   useEffect(() => {
@@ -38,17 +39,15 @@ export default function FingerCountPage() {
   }, []);
 
   // ── นับนิ้ว ────────────────────────────────────────────────────
-  function countFingers(lm: any[], isRightHand: boolean): boolean[] {
+  function countFingers(lm: any[], isRight: boolean): boolean[] {
     const up: boolean[] = [false, false, false, false, false];
 
-    // หัวแม่มือ: เช็คแกน X (กลับทิศตามมือ)
-    if (isRightHand) {
-      up[0] = lm[4].x < lm[3].x && lm[4].x < lm[2].x;
-    } else {
-      up[0] = lm[4].x > lm[3].x && lm[4].x > lm[2].x;
-    }
+    // หัวแม่มือ: แกน X
+    up[0] = isRight
+      ? lm[4].x < lm[3].x && lm[4].x < lm[2].x
+      : lm[4].x > lm[3].x && lm[4].x > lm[2].x;
 
-    // นิ้วชี้ถึงก้อย: เช็คแกน Y (tip ต้องสูงกว่า mcp = โคนนิ้ว)
+    // นิ้วชี้–ก้อย: tip สูงกว่า mcp
     const tips = [8, 12, 16, 20];
     const mcps = [5,  9, 13, 17];
     tips.forEach((tip, i) => {
@@ -59,7 +58,14 @@ export default function FingerCountPage() {
   }
 
   // ── วาด skeleton ───────────────────────────────────────────────
-  function drawSkeleton(ctx: CanvasRenderingContext2D, lm: any[], w: number, h: number, up: boolean[]) {
+  function drawSkeleton(
+    ctx: CanvasRenderingContext2D,
+    lm: any[],
+    w: number,
+    h: number,
+    up: boolean[],
+    isRight: boolean
+  ) {
     const CONNECTIONS = [
       [0,1],[1,2],[2,3],[3,4],
       [0,5],[5,6],[6,7],[7,8],
@@ -69,8 +75,10 @@ export default function FingerCountPage() {
       [5,9],[9,13],[13,17],
     ];
 
+    const baseColor = isRight ? HAND_COLORS.right : HAND_COLORS.left;
+
     // เส้นเชื่อม
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
     ctx.lineWidth = 2;
     CONNECTIONS.forEach(([a, b]) => {
       ctx.beginPath();
@@ -79,7 +87,7 @@ export default function FingerCountPage() {
       ctx.stroke();
     });
 
-    // จุด landmark — สีตามนิ้ว
+    // จุด landmark
     const fingerGroups = [
       [1,2,3,4],
       [5,6,7,8],
@@ -87,14 +95,18 @@ export default function FingerCountPage() {
       [13,14,15,16],
       [17,18,19,20],
     ];
-    const fingerColors = ["#FF6B6B","#FFD93D","#6BCB77","#4D96FF","#FF922B"];
 
     lm.forEach((pt, idx) => {
-      let color = "#fff";
-      fingerGroups.forEach((grp, fi) => {
-        if (grp.includes(idx)) color = up[fi] ? fingerColors[fi] : "rgba(255,255,255,0.4)";
-      });
-      if (idx === 0) color = "#fff";
+      let color = "rgba(255,255,255,0.4)";
+      if (idx === 0) {
+        color = baseColor;
+      } else {
+        fingerGroups.forEach((grp, fi) => {
+          if (grp.includes(idx)) {
+            color = up[fi] ? FINGER_COLORS[fi] : "rgba(255,255,255,0.3)";
+          }
+        });
+      }
 
       ctx.beginPath();
       ctx.arc(pt.x * w, pt.y * h, idx === 0 ? 7 : 5, 0, Math.PI * 2);
@@ -104,6 +116,23 @@ export default function FingerCountPage() {
       ctx.lineWidth = 1;
       ctx.stroke();
     });
+
+    // วาดเลขบนฝ่ามือ
+    const palmX = lm[9].x * w;
+    const palmY = lm[9].y * h;
+    const count = up.filter(Boolean).length;
+    ctx.font = "bold 52px 'Courier New'";
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillText(String(count), palmX - 13, palmY + 3);
+    ctx.fillStyle = baseColor;
+    ctx.fillText(String(count), palmX - 15, palmY);
+
+    // label มือซ้าย/ขวา
+    const wristX = lm[0].x * w;
+    const wristY = lm[0].y * h;
+    ctx.font = "bold 13px 'Courier New'";
+    ctx.fillStyle = baseColor;
+    ctx.fillText(isRight ? "RIGHT" : "LEFT", wristX - 20, wristY + 20);
   }
 
   // ── Animation loop ─────────────────────────────────────────────
@@ -122,21 +151,10 @@ export default function FingerCountPage() {
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    if (landmarksRef.current) {
-      const isRight = handednessRef.current === "Right";
-      const up = countFingers(landmarksRef.current, isRight);
-      drawSkeleton(ctx, landmarksRef.current, canvas.width, canvas.height, up);
-
-      // วาดตัวเลขกลางฝ่ามือ
-      const palmX = landmarksRef.current[9].x * canvas.width;
-      const palmY = landmarksRef.current[9].y * canvas.height;
-      const count = up.filter(Boolean).length;
-      ctx.font = "bold 48px 'Courier New'";
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillText(String(count), palmX - 13, palmY + 3);
-      ctx.fillStyle = "#00FF88";
-      ctx.fillText(String(count), palmX - 15, palmY);
-    }
+    handsDataRef.current.forEach(({ lm, isRight }) => {
+      const up = countFingers(lm, isRight);
+      drawSkeleton(ctx, lm, canvas.width, canvas.height, up, isRight);
+    });
 
     if (!handsRef.current || isProcessingRef.current) return;
     const now = performance.now();
@@ -149,7 +167,7 @@ export default function FingerCountPage() {
       .finally(() => { isProcessingRef.current = false; });
   }
 
-  // ── Start / Stop ───────────────────────────────────────────────
+  // ── Start camera ───────────────────────────────────────────────
   async function startCamera() {
     if (!scriptLoaded || !window.Hands || !videoRef.current) return;
     try {
@@ -163,23 +181,31 @@ export default function FingerCountPage() {
         locateFile: (f: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`,
       });
       handsRef.current.setOptions({
-        maxNumHands: 1,
+        maxNumHands: 2,
         modelComplexity: 1,
         minDetectionConfidence: 0.7,
         minTrackingConfidence: 0.5,
       });
+
       handsRef.current.onResults((results: any) => {
-        if (results.multiHandLandmarks?.[0]) {
-          landmarksRef.current = results.multiHandLandmarks[0];
-          handednessRef.current = results.multiHandedness?.[0]?.label ?? "Right";
-          const isRight = handednessRef.current === "Right";
-          const up = countFingers(results.multiHandLandmarks[0], isRight);
-          setFingersUp(up);
-          setFingerCount(up.filter(Boolean).length);
+        if (results.multiHandLandmarks?.length) {
+          // เก็บข้อมูลทุกมือ
+          handsDataRef.current = results.multiHandLandmarks.map((lm: any, i: number) => ({
+            lm,
+            isRight: results.multiHandedness?.[i]?.label === "Right",
+          }));
+
+          // คำนวณ state สำหรับ UI
+          const info = handsDataRef.current.map(({ lm, isRight }) => {
+            const up = countFingers(lm, isRight);
+            return { isRight, up, count: up.filter(Boolean).length };
+          });
+          setHandsInfo(info);
+          setTotalCount(info.reduce((sum, h) => sum + h.count, 0));
         } else {
-          landmarksRef.current = null;
-          setFingersUp([false, false, false, false, false]);
-          setFingerCount(0);
+          handsDataRef.current = [];
+          setHandsInfo([]);
+          setTotalCount(0);
         }
       });
 
@@ -191,6 +217,7 @@ export default function FingerCountPage() {
     }
   }
 
+  // ── Stop camera ────────────────────────────────────────────────
   function stopCamera() {
     if (animationRef.current) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
     if (videoRef.current?.srcObject) {
@@ -198,13 +225,12 @@ export default function FingerCountPage() {
       videoRef.current.srcObject = null;
     }
     handsRef.current = null;
-    landmarksRef.current = null;
-    setFingersUp([false, false, false, false, false]);
-    setFingerCount(0);
+    handsDataRef.current = [];
+    setHandsInfo([]);
+    setTotalCount(0);
     setStatus("stopped");
   }
 
-  const fingerColors = ["#FF6B6B","#FFD93D","#6BCB77","#4D96FF","#FF922B"];
   const isRunning = status === "running";
 
   return (
@@ -215,9 +241,9 @@ export default function FingerCountPage() {
         <div className="flex items-center justify-between border-b border-gray-700 pb-3">
           <div>
             <h1 className="text-xl font-bold tracking-widest uppercase text-green-400">
-              Finger Counter · MediaPipe
+              Finger Counter · 2 Hands
             </h1>
-            <p className="text-xs text-gray-500 mt-0.5">นับนิ้วมือ real-time</p>
+            <p className="text-xs text-gray-500 mt-0.5">นับนิ้วสองมือ real-time · MediaPipe</p>
           </div>
           <div className="flex gap-2 items-center text-xs">
             <span className={`w-2 h-2 rounded-full ${
@@ -241,24 +267,42 @@ export default function FingerCountPage() {
           {!scriptLoaded && <span className="text-xs text-yellow-400 self-center animate-pulse">โหลด MediaPipe…</span>}
         </div>
 
-        {/* Count display */}
-        <div className="flex gap-4 items-center border border-gray-800 rounded-lg px-6 py-4 bg-gray-950">
-          <span className="text-8xl font-bold text-green-400 w-24 text-center">{fingerCount}</span>
-          <div className="flex flex-col gap-2 flex-1">
-            {FINGER_NAMES.map((name, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <span
-                  className="w-3 h-3 rounded-full transition-all duration-150"
-                  style={{ backgroundColor: fingersUp[i] ? fingerColors[i] : "#333" }}
-                />
-                <span className={`text-sm transition-colors duration-150 ${fingersUp[i] ? "text-white" : "text-gray-600"}`}>
-                  {name}
-                </span>
-                {fingersUp[i] && (
-                  <span className="text-xs ml-auto" style={{ color: fingerColors[i] }}>UP</span>
-                )}
-              </div>
-            ))}
+        {/* Total count */}
+        <div className="border border-gray-800 rounded-lg px-6 py-4 bg-gray-950 flex items-center gap-6">
+          <div className="text-center">
+            <p className="text-xs text-gray-500 uppercase tracking-widest mb-1">รวม</p>
+            <span className="text-8xl font-bold text-green-400">{totalCount}</span>
+          </div>
+
+          {/* แสดงแต่ละมือ */}
+          <div className="flex gap-4 flex-1">
+            {[
+              { label: "RIGHT", color: HAND_COLORS.right },
+              { label: "LEFT",  color: HAND_COLORS.left  },
+            ].map(({ label, color }) => {
+              const hand = handsInfo.find((h) => (label === "RIGHT") === h.isRight);
+              return (
+                <div key={label} className="flex-1 border border-gray-800 rounded-lg p-3 bg-black">
+                  <p className="text-xs font-bold mb-2" style={{ color }}>{label}</p>
+                  <p className="text-4xl font-bold mb-2" style={{ color }}>
+                    {hand ? hand.count : "—"}
+                  </p>
+                  <div className="space-y-1">
+                    {FINGER_NAMES.map((name, i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full transition-all duration-100"
+                          style={{ backgroundColor: hand?.up[i] ? FINGER_COLORS[i] : "#333" }}
+                        />
+                        <span className={`text-xs transition-colors duration-100 ${hand?.up[i] ? "text-white" : "text-gray-600"}`}>
+                          {name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -275,6 +319,10 @@ export default function FingerCountPage() {
         </div>
 
         <video ref={videoRef} className="hidden" playsInline muted />
+
+        <p className="text-xs text-gray-700 text-center">
+          🟢 มือขวา &nbsp;|&nbsp; 🟣 มือซ้าย
+        </p>
       </div>
     </main>
   );
